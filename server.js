@@ -1,7 +1,7 @@
 import express from "express";
 import mongoose from "mongoose";
 import crypto from "crypto";
-
+import cors from "cors";
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -14,6 +14,9 @@ const MONGO_URI =
 const SESSION_TTL_SECONDS = 30 * 60;   // 30 minutes
 const DEDUPE_WINDOW_SECONDS = 60;      // 1 minute
 
+/* ------------------ CORS (ALLOW ALL) ------------------ */
+app.use(cors());
+app.options("*", cors());
 app.use(express.json());
 
 /* ------------------ MongoDB connection ------------------ */
