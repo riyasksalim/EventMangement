@@ -26,13 +26,12 @@ app.set("trust proxy", true);
 app.use(express.json());
 
 /* ------------------ MongoDB connection ------------------ */
-/* IMPORTANT: do NOT exit the process on connection failure (prevents Render 502). */
 mongoose
   .connect(MONGO_URI, { serverSelectionTimeoutMS: 8000 })
   .then(() => console.log("MongoDB connected"))
   .catch((err) => {
     console.error("MongoDB connection error:", err?.message || err);
-    // keep server alive
+    // keep server alive (prevents Render 502)
   });
 
 function dbReady() {
@@ -58,10 +57,14 @@ const sessionSchema = new mongoose.Schema(
     visitorId: { type: String, required: true },
     userAgent: String,
     ipHash: String,
-    lastSeenAt: { type: Date, required: true }
+    lastSeenAt: { type: Date, required: true },
+
+    // ✅ timezone is stored here (optional)
+    timezone: String
   },
   { timestamps: true }
 );
+
 sessionSchema.index({ lastSeenAt: 1 }, { expireAfterSeconds: SESSION_TTL_SECONDS });
 const Session = mongoose.model("Session", sessionSchema);
 
@@ -74,6 +77,7 @@ const dedupeSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
 dedupeSchema.index({ sessionKey: 1, path: 1 }, { unique: true });
 dedupeSchema.index({ lastHitAt: 1 }, { expireAfterSeconds: DEDUPE_WINDOW_SECONDS });
 const Dedupe = mongoose.model("Dedupe", dedupeSchema);
@@ -88,6 +92,7 @@ const visitAggSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
 visitAggSchema.index({ day: 1, path: 1 }, { unique: true });
 const VisitAgg = mongoose.model("VisitAgg", visitAggSchema);
 
@@ -106,11 +111,16 @@ app.post("/track", async (req, res) => {
     return res.status(503).json({ error: "Database not connected yet" });
   }
 
-  const { visitorId, path } = req.body;
+  const { visitorId, path, timezone } = req.body;
 
+  // ✅ Only visitorId + path are required
   if (!visitorId || !path) {
     return res.status(400).json({ error: "visitorId and path are required" });
   }
+
+  // ✅ sanitize timezone (avoid junk payloads)
+  const tz =
+    typeof timezone === "string" && timezone.length <= 64 ? timezone : "";
 
   const now = new Date();
   const userAgent = req.headers["user-agent"] || "unknown";
@@ -124,18 +134,21 @@ app.post("/track", async (req, res) => {
       { sessionKey },
       {
         $setOnInsert: { visitorId, userAgent, ipHash },
-        $set: { lastSeenAt: now }
+        // ✅ actually store timezone
+        $set: { lastSeenAt: now, ...(tz ? { timezone: tz } : {}) }
       },
       { upsert: true, new: false }
     );
+
     const isNewSession = existingSession === null;
 
-    // 2) Dedup: ignore repeat hits for same (sessionKey + path) within the TTL window
+    // 2) Dedup: ignore repeat hits for same (sessionKey + path) within TTL window
     const dedupe = await Dedupe.findOneAndUpdate(
       { sessionKey, path },
       { $set: { lastHitAt: now } },
       { upsert: true, new: false }
     );
+
     if (dedupe !== null) {
       return res.status(204).end();
     }
